@@ -1,5 +1,3 @@
-#!/usr/bin/python
-#-*- coding: UTF-8 -*-
 
 ###########################################################################
 #	import
@@ -14,22 +12,34 @@ import plotly.graph_objects as go
 #	Functions
 #
 ###########################################################################
-def date(dateString):
-	ymd = [int(dts) for dts in dateString.split('/')]
-	return datetime(ymd[0],ymd[1],ymd[2])
-
-def goldenCutter(lower, upper):
+def goldenCut(lower, upper):
 	return [lower, lower+0.382*(upper-lower), (lower+upper)/2, lower+0.618*(upper-lower), upper]
 
-def mostDataInRange(priArray, cutter):
-	rangeNum = len(cutter)
+def mostDataInRange(prices, levels):
+	rangeNum = len(levels)
 	counts = [0]*(rangeNum-1)
-	for pri in priArray:
+	for pri in prices:
 		for i in range(rangeNum-1):
-			if pri >= cutter[i] and pri < cutter[i+1]:
+			if pri >= levels[i] and pri < levels[i+1]:
 				counts[i] += 1
 
 	return counts.index(max(counts))
+
+def mostDataOnLevel(openPrices, closePrices, levels):
+	levelNum = len(levels)
+	counts = [0]*levelNum
+	for i,level in enumerate(levels):
+		for openPri,closePri in zip(openPrices, closePrices):
+			condition1 = (openPri >= level and closePri <= level)
+			condition2 = (openPri <= level and closePri >= level)
+			if condition1 or condition2:
+				counts[i] += 1
+
+	return counts.index(max(counts))
+
+def normalizeVolumes(volumes, bound):
+	max_vol = max(volumes)
+	return [bound[0]+vol/max_vol*(bound[1]-bound[0]) for vol in volumes]
 
 ###########################################################################
 #
@@ -42,7 +52,7 @@ class Future:
 		self.ID = futureID;
 		self.url = 'http://djinfo.cathaysec.com.tw/Z/ZM/ZMB/CZMB.djbcd?'
 		self.req = requests.session()
-		retries = Retry(total=10,backoff_factor=1,status_forcelist=[ 500, 502, 503, 504 ])
+		retries = Retry(total=10, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 		self.req.mount('http://', HTTPAdapter(max_retries=retries))
 
 		# price and volume
@@ -50,10 +60,10 @@ class Future:
 		self.highPri 		= []
 		self.lowPri 		= []
 		self.closePri 		= []
-		self.volume 		= []
+		self.volumes 		= []
 
 		# golden retracement
-		self.goldenCutter	= []
+		self.goldenLevels	= []
 
 		# chart bound
 		self.yRange 		= []
@@ -67,14 +77,16 @@ class Future:
 			resp = self.req.get(self.url + reqParam)
 			respSplit = resp.text.split()
 		except:
+			print('Connection fail')
 			return False
+
 		self.dataNum 	= dataNum;
 		self.dateline 	= respSplit[0].split(',')
 		self.openPri  	= [float(pri) for pri in respSplit[1].split(',')]
 		self.highPri  	= [float(pri) for pri in respSplit[2].split(',')]
 		self.lowPri   	= [float(pri) for pri in respSplit[3].split(',')]
 		self.closePri 	= [float(pri) for pri in respSplit[4].split(',')]
-		self.volume  	= [  int(vol) for vol in respSplit[5].split(',')]
+		self.volumes  	= [  int(vol) for vol in respSplit[5].split(',')]
 		return True
 
 	#------------------------------------------
@@ -87,12 +99,12 @@ class Future:
 		upperPri = max(self.highPri)
 		self.yRange = [lowerPri, upperPri]
 		for i in range(cutDepth):
-			cutter = goldenCutter(lowerPri, upperPri)
-			whichRange = mostDataInRange(self.closePri, cutter)
-			lowerPri = cutter[whichRange]
-			upperPri = cutter[whichRange+1]
+			levels = goldenCut(lowerPri, upperPri)
+			whichRange = mostDataInRange(self.closePri, levels)
+			self.goldenLevels.append(levels)
+			lowerPri = levels[whichRange]
+			upperPri = levels[whichRange+1]
 
-		self.goldenCutter = cutter
 		return True
 
 	#------------------------------------------
@@ -106,42 +118,51 @@ class Future:
 	#------------------------------------------
 	def getShapes(self):
 		dicts = []
-		for level in self.goldenCutter:
-			dicts.append(dict(	x0=self.dateline[0], 
-								x1=self.dateline[-1],
-								y0=self.getHeightRatio(level), 
-								y1=self.getHeightRatio(level),
-								xref='x',
-								yref='paper',
-								line_width=2))
+		for depth,levels in enumerate(self.goldenLevels):
+			for level in levels:
+				dicts.append(dict(	x0=self.dateline[0], 
+									x1=self.dateline[-1],
+									y0=self.getHeightRatio(level), 
+									y1=self.getHeightRatio(level),
+									xref='x',
+									yref='paper',
+									line_width=2,
+									line_color='gray'))
 		return dicts
 
 	#------------------------------------------
 	#	plotChart
 	#------------------------------------------
 	def plotChart(self):
-		candleData = go.Candlestick(x=self.dateline,
+		priData = go.Candlestick(	x=self.dateline,
 									open=self.openPri,
 									high=self.highPri,
 									low=self.lowPri,
 									close=self.closePri,
 									increasing_line_color= 'red', 
 									decreasing_line_color= 'green')
-
-		fig = go.Figure(data=[candleData])
+		volData = go.Bar(	x=self.dateline,
+							y=normalizeVolumes(self.volumes, self.yRange),
+							marker_color='LightBlue')
+		fig = go.Figure(data=[volData, priData])
 		fig.update_yaxes(range=self.yRange)
 		fig.update_layout(
-			title = self.ID,
+			title = self.ID+'  from '+self.dateline[0]+' ('+str(self.dataNum)+' days)',
 			shapes = self.getShapes()
 			)
 		fig.show()
 
 
+###########################################################################
+#
+#	main
+#
+###########################################################################
 if __name__ == '__main__':
 	FITX = Future("FITX")
-	if FITX.getGoldenRatio(480, 1):
-		for cut in FITX.goldenCutter:
-			print(cut)
+	if FITX.getGoldenRatio(1200, 2):
+		# print('levels:')
+		# for levels in FITX.goldenLevels:
+		# 	for level in reversed(levels):
+		# 		print('  %8.2f' % (level))
 		FITX.plotChart()
-	else:
-		print('fail')
